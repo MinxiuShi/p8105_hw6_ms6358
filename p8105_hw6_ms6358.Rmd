@@ -1,0 +1,157 @@
+---
+title: "p8105_hw6_ms6358.Rmd"
+output: github_document
+---
+
+
+```{r}
+library(readxl)
+library(tidyverse)
+library(modelr)
+library(mgcv)
+```
+
+Problem 1
+
+## Here is the data cleaning.
+
+```{r}
+birthweight = read.csv("./birthweight.csv")
+
+birthweight %>%
+  mutate(
+    babysex = as.factor(babysex),
+    frace = as.factor(frace),
+    malform = as.factor(malform),
+    mrace = as.factor(mrace)) %>%
+  drop_na()
+```
+## Find the fittest model
+
+```{r}
+model = lm(bwt ~ ., data = birthweight)
+summary(model)
+
+model_1 = lm(bwt ~ babysex + bhead + blength + delwt + fincome + gaweeks + momage + mrace + parity, data = birthweight)
+summary(model_1)
+
+model_2 = lm(bwt ~ babysex + bhead + blength + delwt + fincome + gaweeks + mrace + parity, data = birthweight)
+summary(model_2)
+
+model_3 = lm(bwt ~ babysex + bhead + blength + delwt + fincome + gaweeks + mrace, data = birthweight)
+summary(model_3)
+```
+I first included all factors in the model and kept those statistically significant. To follow the "parsimony" rule, I eliminated the factor "parity".
+
+## Make the plot
+
+```{r}
+birthweight %>%
+  modelr::add_residuals(model_3) %>%
+  modelr::add_predictions(model_3) %>%
+  ggplot(aes(x = pred, y = resid)) +
+  geom_point() +
+  labs(x = "fitted values", y = "residuals")
+```
+
+## Compare my model to two others
+
+```{r}
+cv_df =
+  crossv_mc(birthweight, 100)  %>% 
+  mutate(
+    train = map(train, as_tibble),
+    test = map(test, as_tibble),
+    my_mod  = map(train, ~lm(bwt ~ babysex + bhead + blength + delwt + fincome + gaweeks + mrace, data = .x)),
+    model_4  = map(train, ~lm(bwt ~ blength + gaweeks, data = .x)),
+    model_5  = map(train, ~lm(bwt ~ bhead + blength + babysex + bhead*blength + bhead*babysex + blength*babysex + bhead*blength*babysex, data = .x))) %>%
+  mutate(
+    rmse_my_model = map2_dbl(my_mod, test, ~rmse(model = .x, data = .y)),
+    rmse_model_4 = map2_dbl(model_4, test, ~rmse(model = .x, data = .y)),
+    rmse_model_5 = map2_dbl(model_5, test, ~rmse(model = .x, data = .y)))
+
+cv_df %>% 
+  select(starts_with("rmse")) %>% 
+  pivot_longer(
+    everything(),
+    names_to = "model", 
+    values_to = "rmse",
+    names_prefix = "rmse_") %>% 
+  mutate(model = fct_inorder(model)) %>% 
+  ggplot(aes(x = model, y = rmse)) + geom_violin()
+```
+
+
+Problem 2
+
+## Download the data
+
+```{r}
+weather_df = 
+  rnoaa::meteo_pull_monitors(
+    c("USW00094728"),
+    var = c("PRCP", "TMIN", "TMAX"), 
+    date_min = "2017-01-01",
+    date_max = "2017-12-31") %>%
+  mutate(
+    name = recode(id, USW00094728 = "CentralPark_NY"),
+    tmin = tmin / 10,
+    tmax = tmax / 10) %>%
+  select(name, id, everything())
+```
+## Make the distribution plots
+
+```{r}
+rsquare = function(model){
+  r =
+    model %>% 
+    broom::glance() %>% 
+    pull(r.squared)
+  
+  return(r)
+}
+
+log = function(model){
+  estimate = 
+  model %>% 
+    broom::tidy() %>% 
+    pull(estimate)
+  
+  log = log10(prod(estimate) )
+  
+  return(log)
+}
+
+boot_straps =
+  weather_df %>%
+  modelr::bootstrap(n = 5000) %>% 
+  mutate(
+    models = map(strap, ~ lm(tmax ~ tmin, data = .x)),
+    r_square = unlist(map(models, rsquare)),
+    log_estimate = unlist(map(models, log))) %>%
+  select(-strap, -models)
+
+boot_straps %>% 
+  ggplot(aes(x = r_square))+
+  geom_density()
+
+boot_straps %>% 
+  ggplot(aes(x = log_estimate))+
+  geom_density()
+```
+
+## Identify the 2.5% and 97.5% quantiles
+
+```{r}
+boot_straps %>% 
+  summarize(
+    ci_lower = quantile(r_square, 0.025), 
+    ci_upper = quantile(r_square, 0.975)) %>%
+    knitr::kable(digits = 2)
+
+boot_straps %>% 
+  summarize(
+    ci_lower = quantile(log_estimate, 0.025), 
+    ci_upper = quantile(log_estimate, 0.975)) %>%
+  knitr::kable(digits = 2)
+```
